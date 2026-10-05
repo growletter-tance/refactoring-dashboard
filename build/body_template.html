@@ -1,0 +1,284 @@
+<style>
+  /* ---- WSP additions: publication tabs + pending state ---- */
+  .pub-tabs{ display:flex; gap:8px; flex-wrap:wrap; margin:0 0 28px; }
+  .pub-tab{ font-family:"IBM Plex Sans"; font-size:.9rem; font-weight:600; color:var(--ink-soft); background:var(--surface); border:1px solid var(--line-strong); border-radius:24px; padding:9px 18px; cursor:pointer; display:flex; align-items:center; gap:8px; }
+  .pub-tab small{ font-family:"IBM Plex Mono",monospace; font-size:.66rem; font-weight:500; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-faint); }
+  .pub-tab.is-active{ background:var(--accent); border-color:var(--accent); color:var(--tooltip-fg); }
+  .pub-tab.is-active small{ color:var(--tooltip-fg); opacity:.8; }
+  .pub-panel[hidden]{ display:none!important; }
+  .pub-intro{ font-size:.86rem; color:var(--ink-soft); margin:-12px 0 26px; max-width:66ch; }
+  .kpi .value.is-pending{ color:var(--ink-faint); font-weight:600; }
+  .chart-grid .card + .card{ margin-top:0; }
+  .chart-grid + .card{ margin-top:14px; }
+  .pending-card{ border:1px dashed var(--line-strong); border-radius:12px; padding:26px 24px; text-align:center; color:var(--ink-soft); background:var(--surface-2); }
+  .pending-card svg{ width:26px; height:26px; margin-bottom:8px; color:var(--ink-faint); }
+  .pending-card .ce-title{ font-weight:600; color:var(--ink); font-size:.9rem; margin-bottom:3px; }
+  .pending-card .ce-sub{ font-size:.76rem; color:var(--ink-faint); }
+</style>
+
+<div class="wrap">
+
+  <header class="top">
+    <div class="brand">
+      __LOGO__
+      <h1 class="title">Paid acquisition dashboard</h1>
+    </div>
+    <div class="updated"><b>Reporting period</b><span id="rpt-period">__PERIOD__</span></div>
+  </header>
+  <hr class="rule">
+
+__PANELS__
+
+  <footer class="colophon">
+    <span>Sources: Meta Ads &middot; Substack and Airtable (pending)</span>
+    <span>Prepared by Growletter</span>
+  </footer>
+</div>
+
+<div id="tooltip"></div>
+<div class="ct-lightbox" id="ct-lightbox"><img id="ct-lightbox-img" src="" alt="Enlarged ad creative"></div>
+
+<script>
+(function(){
+  var DATA = __DATA__;
+
+  var svgNS = "http://www.w3.org/2000/svg";
+  var tooltip = document.getElementById("tooltip");
+  var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  var MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+  function fmtDate(d){ var p = d.split("-"); return MONTHS[parseInt(p[1],10)-1] + " " + parseInt(p[2],10); }
+  function fmtDateYear(d){ var p = d.split("-"); return fmtDate(d) + ", " + p[0]; }
+  function showTip(evt, html){ tooltip.innerHTML = html; tooltip.style.left = evt.clientX + "px"; tooltip.style.top = evt.clientY + "px"; tooltip.classList.add("show"); }
+  function hideTip(){ tooltip.classList.remove("show"); }
+  function el(tag, attrs, cls){ var e = document.createElementNS(svgNS, tag); for (var k in attrs){ e.setAttribute(k, attrs[k]); } if (cls) e.setAttribute("class", cls); return e; }
+  function q(panel, role){ return panel.querySelector('[data-role="' + role + '"]'); }
+  function setText(panel, role, text){ var n = q(panel, role); if (n) n.textContent = text; }
+
+  var PENDING_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M3 7l9 6 9-6"></path></svg>';
+  function pendingCard(title, sub){ return '<div class="pending-card">' + PENDING_ICON + '<div class="ce-title">' + title + '</div><div class="ce-sub">' + sub + '</div></div>'; }
+
+  function niceStep(rawStep){ var mag = Math.pow(10, Math.floor(Math.log(rawStep) / Math.LN10)); var norm = rawStep / mag; var n = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10; return n * mag; }
+  function axisScale(values, desiredTicks){ var dataMax = Math.max.apply(null, values) || 1; var step = niceStep((dataMax * 1.15) / desiredTicks); var ticks = []; for (var i = 0; i <= desiredTicks; i++) ticks.push(Math.round(step * i * 100) / 100); return { maxVal: step * desiredTicks, ticks: ticks }; }
+  function dateLabelIndices(n){ var idxs = []; for (var i = 0; i < n; i += 5) idxs.push(i); if (idxs[idxs.length - 1] !== n - 1) idxs.push(n - 1); return idxs; }
+
+  var padL = 34, padR = 8, padT = 10, padB = 22, W = 680, H = 200;
+  var plotW = W - padL - padR, plotH = H - padT - padB;
+  function xPos(i, n){ return padL + (i + 0.5) * (plotW / n); }
+  function baseline(){ return padT + plotH; }
+
+  function drawSignups(svg, signups){
+    svg.innerHTML = "";
+    var scale = axisScale(signups.map(function(d){ return d.subs; }), 2);
+    scale.ticks.forEach(function(t){
+      var y = baseline() - (t / scale.maxVal) * plotH;
+      svg.appendChild(el("line", {x1:padL, x2:W-padR, y1:y, y2:y}, "grid-line"));
+      var lbl = el("text", {x:padL-6, y:y+3, "text-anchor":"end"}, "axis-label"); lbl.textContent = t; svg.appendChild(lbl);
+    });
+    var slot = plotW / signups.length, barW = Math.min(18, slot - 3), maxIdx = 0;
+    signups.forEach(function(d,i){ if (d.subs > signups[maxIdx].subs) maxIdx = i; });
+    signups.forEach(function(d, i){
+      var x = xPos(i, signups.length) - barW/2, h = (d.subs / scale.maxVal) * plotH, y = baseline() - h;
+      var bar = el("rect", {x:x, y:y, width:barW, height:Math.max(h,1), rx:3}, "bar-mark"); svg.appendChild(bar);
+      var hit = el("rect", {x: xPos(i,signups.length)-slot/2, y:padT, width:slot, height:plotH}, "hit-target");
+      var tip = fmtDate(d.date) + '<br><span class="tt-val">' + d.subs.toLocaleString() + '</span> signups &middot; $' + d.spend.toFixed(0) + ' spend';
+      hit.addEventListener("pointerenter", function(e){ bar.classList.add("hovered"); showTip(e, tip); });
+      hit.addEventListener("pointermove", function(e){ showTip(e, tip); });
+      hit.addEventListener("pointerleave", function(){ bar.classList.remove("hovered"); hideTip(); });
+      svg.appendChild(hit);
+      if (i === signups.length - 1 || i === maxIdx){ var lbl = el("text", {x:x+barW/2, y:y-5, "text-anchor":"middle"}, "direct-label"); lbl.textContent = d.subs; svg.appendChild(lbl); }
+    });
+    dateLabelIndices(signups.length).forEach(function(i){ var lbl = el("text", {x:xPos(i, signups.length), y:H-6, "text-anchor":"middle"}, "axis-label"); lbl.textContent = fmtDate(signups[i].date); svg.appendChild(lbl); });
+  }
+
+  function drawCpa(svg, signups){
+    svg.innerHTML = "";
+    var pts0 = signups.filter(function(d){ return d.subs > 0; });
+    var scale = axisScale(pts0.map(function(d){ return d.cpa; }), 3);
+    scale.ticks.forEach(function(t){
+      var y = baseline() - (t / scale.maxVal) * plotH;
+      svg.appendChild(el("line", {x1:padL, x2:W-padR, y1:y, y2:y}, "grid-line"));
+      var lbl = el("text", {x:padL-6, y:y+3, "text-anchor":"end"}, "axis-label"); lbl.textContent = "$" + t; svg.appendChild(lbl);
+    });
+    var pts = signups.map(function(d,i){ return [xPos(i, signups.length), baseline() - (d.cpa / scale.maxVal) * plotH]; });
+    var areaD = "M" + pts[0][0] + "," + baseline() + " "; pts.forEach(function(p){ areaD += "L" + p[0] + "," + p[1] + " "; }); areaD += "L" + pts[pts.length-1][0] + "," + baseline() + " Z";
+    svg.appendChild(el("path", {d:areaD}, "area-mark"));
+    svg.appendChild(el("path", {d:"M" + pts.map(function(p){ return p[0] + "," + p[1]; }).join(" L")}, "line-mark"));
+    var slot = plotW / signups.length, maxIdx = 0, minIdx = 0;
+    signups.forEach(function(d,i){ if (d.cpa > signups[maxIdx].cpa) maxIdx = i; if (d.subs > 0 && (signups[minIdx].subs === 0 || d.cpa < signups[minIdx].cpa)) minIdx = i; });
+    pts.forEach(function(p, i){
+      var d = signups[i];
+      if (i === pts.length - 1 || i === maxIdx || i === minIdx) svg.appendChild(el("circle", {cx:p[0], cy:p[1], r:4}, "end-dot"));
+      var hit = el("rect", {x: xPos(i,signups.length)-slot/2, y:padT, width:slot, height:plotH}, "hit-target");
+      var tip = fmtDate(d.date) + '<br><span class="tt-val">$' + d.cpa.toFixed(2) + '</span> per signup';
+      hit.addEventListener("pointerenter", function(e){ showTip(e, tip); });
+      hit.addEventListener("pointermove", function(e){ showTip(e, tip); });
+      hit.addEventListener("pointerleave", hideTip);
+      svg.appendChild(hit);
+    });
+    var last = pts.length - 1;
+    var endLbl = el("text", {x:pts[last][0], y:pts[last][1]-9, "text-anchor":"middle"}, "direct-label"); endLbl.textContent = "$" + signups[last].cpa.toFixed(2); svg.appendChild(endLbl);
+    if (maxIdx !== last){ var peakLbl = el("text", {x:pts[maxIdx][0], y:pts[maxIdx][1]-9, "text-anchor":"middle"}, "direct-label muted"); peakLbl.textContent = "$" + signups[maxIdx].cpa.toFixed(2) + " peak"; svg.appendChild(peakLbl); }
+    dateLabelIndices(signups.length).forEach(function(i){ var lbl = el("text", {x:xPos(i, signups.length), y:H-6, "text-anchor":"middle"}, "axis-label"); lbl.textContent = fmtDate(signups[i].date); svg.appendChild(lbl); });
+  }
+
+  function renderRawTable(panel, signups){
+    var tbody = q(panel, "raw-tbody"); tbody.innerHTML = "";
+    signups.forEach(function(d){
+      var tr = document.createElement("tr");
+      [fmtDate(d.date), "$" + d.spend.toFixed(2), d.subs.toLocaleString(), d.subs ? "$" + d.cpa.toFixed(2) : "–"].forEach(function(t){ var td = document.createElement("td"); td.textContent = t; tr.appendChild(td); });
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderCompare(panel, historyIn){
+    var history = (historyIn || []).slice().sort(function(a,b){ return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+    var capEl = q(panel, "cmp-rolling-caption");
+    if (!history.length){ capEl.textContent = "Not enough history yet to compare."; return; }
+    function sumBlock(arr){ var s = 0, n = 0; arr.forEach(function(d){ s += d.spend; n += d.subs; }); return { spend:s, subs:n, cpa: n ? s/n : 0 }; }
+    function pctDelta(c, p){ return p ? (c - p) / p * 100 : null; }
+    function fmtPct(p){ if (p === null) return "n/a"; return (p > 0 ? "+" : p < 0 ? "−" : "") + Math.abs(p).toFixed(1) + "%"; }
+    function fmtMoney(n){ return "$" + n.toLocaleString(undefined, {maximumFractionDigits:0}); }
+    function statBlock(label, c, p, fmt, goodDir){
+      var d = pctDelta(c, p), cls = "is-neutral";
+      if (goodDir && d !== null && d !== 0){ cls = (goodDir === "up" ? d > 0 : d < 0) ? "is-good" : "is-bad"; }
+      var arrow = (d === null || d === 0) ? "" : (d > 0 ? " ↑" : " ↓");
+      var prevTxt = p ? ("vs " + fmt(p)) : "no prior data";
+      return '<div class="compare-stat"><div class="lbl">' + label + '</div><div class="rows"><span class="now">' + fmt(c) + '</span><span class="prev">' + prevTxt + '</span></div><div class="delta ' + cls + '">' + fmtPct(d) + arrow + '</div></div>';
+    }
+    function renderStats(container, a, b){
+      container.innerHTML = statBlock("Spend", a.spend, b.spend, fmtMoney, null) +
+        statBlock("Signups", a.subs, b.subs, function(n){ return n.toLocaleString(); }, "up") +
+        statBlock("Cost / signup", a.cpa, b.cpa, function(n){ return "$" + n.toFixed(2); }, "down");
+    }
+    var rollCurr = history.slice(-30), rollPrev = history.slice(-60, -30);
+    var cap = fmtDateYear(rollCurr[0].date) + " – " + fmtDateYear(rollCurr[rollCurr.length-1].date);
+    cap += rollPrev.length ? ("  vs  " + fmtDateYear(rollPrev[0].date) + " – " + fmtDateYear(rollPrev[rollPrev.length-1].date) + (rollPrev.length < 30 ? " (" + rollPrev.length + " days, campaign launch)" : "")) : "  (not enough history yet for a prior period)";
+    capEl.textContent = cap;
+    renderStats(q(panel, "cmp-rolling-stats"), sumBlock(rollCurr), sumBlock(rollPrev));
+
+    var monthMap = {}, monthOrder = [];
+    history.forEach(function(d){ var ym = d.date.slice(0,7); if (!monthMap[ym]){ monthMap[ym] = []; monthOrder.push(ym); } monthMap[ym].push(d); });
+    monthOrder.sort();
+    function monthLabel(ym){ var p = ym.split("-"); return MONTH_NAMES[parseInt(p[1],10)-1] + " " + p[0]; }
+    function daysInMonth(ym){ var p = ym.split("-"); return new Date(parseInt(p[0],10), parseInt(p[1],10), 0).getDate(); }
+    var selA = q(panel, "month-a"), selB = q(panel, "month-b");
+    selA.innerHTML = ""; selB.innerHTML = "";
+    monthOrder.slice().reverse().forEach(function(ym){
+      [selA, selB].forEach(function(sel){ var o = document.createElement("option"); o.value = ym; o.textContent = monthLabel(ym); sel.appendChild(o); });
+    });
+    selA.value = monthOrder[monthOrder.length - 1];
+    selB.value = monthOrder.length >= 2 ? monthOrder[monthOrder.length - 2] : monthOrder[monthOrder.length - 1];
+    function renderMonths(){
+      var a = monthMap[selA.value] || [], b = monthMap[selB.value] || [];
+      q(panel, "cmp-months-caption").textContent = monthLabel(selA.value) + "  vs  " + monthLabel(selB.value);
+      renderStats(q(panel, "cmp-months-stats"), sumBlock(a), sumBlock(b));
+      var bits = [];
+      [[selA.value, a], [selB.value, b]].forEach(function(pair){ if (pair[1].length && pair[1].length < daysInMonth(pair[0])) bits.push(monthLabel(pair[0]) + " has " + pair[1].length + " of " + daysInMonth(pair[0]) + " days of data"); });
+      q(panel, "cmp-months-note").textContent = bits.filter(function(v, i, arr){ return arr.indexOf(v) === i; }).join(". ");
+    }
+    selA.onchange = renderMonths; selB.onchange = renderMonths; renderMonths();
+
+    var tabR = q(panel, "tab-rolling"), tabM = q(panel, "tab-months"), pR = q(panel, "cmp-rolling"), pM = q(panel, "cmp-months");
+    tabR.onclick = function(){ tabR.classList.add("is-active"); tabR.setAttribute("aria-selected","true"); tabM.classList.remove("is-active"); tabM.setAttribute("aria-selected","false"); pR.style.display = ""; pM.style.display = "none"; };
+    tabM.onclick = function(){ tabM.classList.add("is-active"); tabM.setAttribute("aria-selected","true"); tabR.classList.remove("is-active"); tabR.setAttribute("aria-selected","false"); pM.style.display = ""; pR.style.display = "none"; };
+  }
+
+  function money(n, d){ return "$" + n.toLocaleString(undefined, {minimumFractionDigits: d === undefined ? 2 : d, maximumFractionDigits: d === undefined ? 2 : d}); }
+  function pct(n, d){ return (n * 100).toFixed(d === undefined ? 1 : d) + "%"; }
+
+  function renderExtras(panel, P){
+    var K = P.kpis || {};
+    var target = K.target || 2;
+    if (K.signups30 !== undefined){
+      setText(panel, "kpi-signups-value", K.signups30.toLocaleString());
+      setText(panel, "kpi-signups-note", money(K.spend30, 0) + " spend, last 30 days");
+    }
+    if (K.cpa30 !== undefined){
+      setText(panel, "kpi-cpa30-value", money(K.cpa30));
+      var c30 = q(panel, "kpi-cpa30-chip");
+      var ok30 = K.cpa30 <= target;
+      c30.className = "chip " + (ok30 ? "good" : "bad");
+      c30.textContent = (ok30 ? "At or under " : "Above ") + money(target, 0) + " target";
+    }
+    if (K.cpa7 !== undefined){
+      setText(panel, "kpi-cpa7-value", money(K.cpa7));
+      var c7 = q(panel, "kpi-cpa7-chip");
+      var ok7 = K.cpa7 <= target;
+      c7.className = "chip " + (ok7 ? "good" : "bad");
+      c7.textContent = (ok7 ? "At or under " : "Above ") + money(target, 0) + " target";
+      if (K.cpa7prev) setText(panel, "kpi-cpa7-note", "Prior 7 days: " + money(K.cpa7prev));
+    }
+    var BE = P.breakEven;
+    if (BE){
+      var need = BE.cpa30 / BE.price;
+      setText(panel, "kpi-be-value", pct(need, 2));
+      setText(panel, "kpi-be-note", "of ad signups going paid recovers ad spend in year one at " + money(BE.price, 0) + "/yr");
+      var cells = [
+        ["At current 30-day cost", BE.cpa30],
+        ["At last 7 days' cost", BE.cpa7],
+        ["At the " + money(target, 0) + " target", target]
+      ];
+      q(panel, "be-body").innerHTML = '<div class="be-grid">' + cells.map(function(c){
+        return '<div class="be-cell"><div class="lbl">' + c[0] + '</div><div class="num">' + pct(c[1] / BE.price, 2) + '</div><div class="sub">' + money(c[1]) + ' per signup &divide; ' + money(BE.price, 0) + '</div></div>';
+      }).join("") + '</div>';
+    }
+
+    var A = P.audiences || [];
+    if (A.length){
+      var rows = A.map(function(a){
+        var cpa30 = a.subs30 ? a.spend30 / a.subs30 : 0, cpa7 = a.subs7 ? a.spend7 / a.subs7 : 0;
+        function cpaCell(v, subs){ if (!subs) return "&ndash;"; var cls = v <= target ? "good" : "bad"; return '<span class="ct-cpa ' + cls + '">' + money(v) + '</span>'; }
+        return '<tr><td><div class="aud-name">' + a.name + '</div><div class="aud-desc">' + a.desc + '</div></td>' +
+          '<td>' + money(a.spend30, 0) + '</td><td>' + a.subs30.toLocaleString() + '</td><td>' + cpaCell(cpa30, a.subs30) + '</td>' +
+          '<td>' + money(a.spend7, 0) + '</td><td>' + a.subs7.toLocaleString() + '</td><td>' + cpaCell(cpa7, a.subs7) + '</td></tr>';
+      }).join("");
+      q(panel, "aud-body").innerHTML = '<div class="card table-scroll"><table class="aud-table"><thead><tr><th>Audience</th><th>30-day spend</th><th>Signups</th><th>Cost / signup</th><th>7-day spend</th><th>Signups</th><th>Cost / signup</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+
+    var QL = P.quality;
+    if (QL && QL.rows && QL.rows.length){
+      q(panel, "quality-banner").hidden = true;
+      q(panel, "quality-body").innerHTML = '<div class="card table-scroll"><table class="aud-table"><thead><tr><th>Ad</th><th>Subscribers</th><th>Day-7 open</th><th>Day-30 open</th><th>Click rate</th><th>Went paid</th><th>Cost / paid member</th></tr></thead><tbody>' +
+        QL.rows.map(function(r){
+          return '<tr><td><div class="aud-name">' + r.ad + '</div></td><td>' + r.subs.toLocaleString() + '</td><td>' + r.open7 + '</td><td>' + r.open30 + '</td><td>' + r.click + '</td><td>' + r.paid + '</td><td>' + (r.costPerPaid || "&ndash;") + '</td></tr>';
+        }).join("") + '</tbody></table></div>';
+    }
+  }
+
+  function renderPanel(key){
+    var P = DATA.pubs[key], panel = document.getElementById("panel-" + key);
+    if (!P || !panel) return;
+    setText(panel, "chart-signups-sub", DATA.chartRangeLabel);
+    setText(panel, "chart-cpa-sub", DATA.chartRangeLabel);
+    setText(panel, "sum-spend", P.summary.spend);
+    setText(panel, "sum-signups", P.summary.signups);
+    setText(panel, "sum-cpa", P.summary.cpa);
+    drawSignups(q(panel, "chart-signups"), P.signups);
+    drawCpa(q(panel, "chart-cpa"), P.signups);
+    renderRawTable(panel, P.signups);
+    renderCompare(panel, P.dailyHistory);
+    renderExtras(panel, P);
+  }
+
+  document.getElementById("rpt-period").textContent = DATA.reportingPeriod;
+  Object.keys(DATA.pubs).forEach(renderPanel);
+
+  // ---- publication tabs ----
+  var tabs = document.querySelectorAll(".pub-tab");
+  function selectPub(key){
+    tabs.forEach(function(t){ var on = t.getAttribute("data-pub") === key; t.classList.toggle("is-active", on); t.setAttribute("aria-selected", on ? "true" : "false"); });
+    document.querySelectorAll(".pub-panel").forEach(function(p){ p.hidden = p.id !== "panel-" + key; });
+    try { history.replaceState(null, "", "#" + key); } catch(e){}
+  }
+  tabs.forEach(function(t){ t.addEventListener("click", function(){ selectPub(t.getAttribute("data-pub")); }); });
+  var initial = (location.hash || "").replace("#", "");
+  if (DATA.pubs[initial]) selectPub(initial);
+
+  // ---- creative lightbox ----
+  var lb = document.getElementById("ct-lightbox"), lbImg = document.getElementById("ct-lightbox-img");
+  document.querySelectorAll(".ct-thumb").forEach(function(img){ img.addEventListener("click", function(){ lbImg.src = img.src; lb.classList.add("is-open"); }); });
+  lb.addEventListener("click", function(){ lb.classList.remove("is-open"); });
+  document.addEventListener("keydown", function(e){ if (e.key === "Escape") lb.classList.remove("is-open"); });
+})();
+</script>
