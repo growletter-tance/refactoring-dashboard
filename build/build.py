@@ -25,37 +25,60 @@ logo = logo.replace('<svg width="183" height="33"', '<svg class="brand-logo" rol
 img_path = os.path.join(RAW, 'images.json')
 images = json.load(open(img_path)) if os.path.exists(img_path) else {}
 
-REPORT_END = dt.date(2026, 10, 4)
+import argparse
+_ap = argparse.ArgumentParser()
+_ap.add_argument('--end', help='last day of the reporting window, YYYY-MM-DD (default: yesterday)')
+_args = _ap.parse_args()
+REPORT_END = dt.date.fromisoformat(_args.end) if _args.end else dt.date.today() - dt.timedelta(days=1)
 START30 = REPORT_END - dt.timedelta(days=29)
 START7 = REPORT_END - dt.timedelta(days=6)
 PRIOR7 = (REPORT_END - dt.timedelta(days=13), REPORT_END - dt.timedelta(days=7))
 TARGET_CPA = 2.0
 PRICE = 150.0
 
-GROUP = {'R': 'us', 'L': 'us', 'ROW': 'row', 'RT': 'test', 'LS': 'test', 'LN': 'test'}
 AUDIENCES = [
     ('us', 'US prospecting', 'Broad US audience, 25+'),
-    ('row', 'Non-US prospecting', 'Broad audience outside the US, launched Oct 2'),
+    ('row', 'Non-US prospecting', 'Broad audience outside the US, live since Oct 2'),
     ('test', 'Creative testing', 'New creative tested on the US audience before moving to prospecting'),
 ]
 
 
-def signups(code, lead, reg):
-    return reg if code in ('R', 'RT') else lead
+def classify(adset_name):
+    """Map a Meta ad set name to (counts_registration, audience group)."""
+    reg = '| Reg' in adset_name
+    if 'ROW' in adset_name:
+        grp = 'row'
+    elif 'Test' in adset_name:
+        grp = 'test'
+    else:
+        grp = 'us'
+    return reg, grp
 
 
 rows = []
-for r in csv.DictReader(open(os.path.join(RAW, 'meta_adset_daily.csv'))):
-    d = dt.date.fromisoformat(r['date'])
-    rows.append({'date': d, 'code': r['adset'], 'spend': float(r['spend']),
-                 'subs': signups(r['adset'], int(r['lead']), int(r['reg']))})
+daily_json = os.path.join(RAW, 'meta_daily.json')
+if os.path.exists(daily_json):
+    # Windsor rows: date, campaign, adset_name, spend, actions_lead, actions_complete_registration
+    src = json.load(open(daily_json))
+    src = src.get('data', src) if isinstance(src, dict) else src
+    for r in src:
+        reg, grp = classify(r['adset_name'])
+        n = (r.get('actions_complete_registration') if reg else r.get('actions_lead')) or 0
+        rows.append({'date': dt.date.fromisoformat(r['date'][:10]), 'grp': grp, 'spend': float(r.get('spend') or 0), 'subs': int(n)})
+else:
+    CODE_GROUP = {'R': 'us', 'L': 'us', 'ROW': 'row', 'RT': 'test', 'LS': 'test', 'LN': 'test'}
+    for r in csv.DictReader(open(os.path.join(RAW, 'meta_adset_daily.csv'))):
+        code = r['adset']
+        n = int(r['reg']) if code in ('R', 'RT') else int(r['lead'])
+        rows.append({'date': dt.date.fromisoformat(r['date']), 'grp': CODE_GROUP[code], 'spend': float(r['spend']), 'subs': n})
 
 by_day = collections.OrderedDict()
-day = min(r['date'] for r in rows)
+day = min(r['date'] for r in rows if r['date'] <= REPORT_END)
 while day <= REPORT_END:
     by_day[day] = [0.0, 0]
     day += dt.timedelta(days=1)
 for r in rows:
+    if r['date'] > REPORT_END: continue
     by_day[r['date']][0] += r['spend']
     by_day[r['date']][1] += r['subs']
 
@@ -71,7 +94,7 @@ last30 = [rec(d, v) for d, v in by_day.items() if d >= START30]
 def window(a, b, group=None):
     s = n = 0
     for r in rows:
-        if a <= r['date'] <= b and (group is None or GROUP[r['code']] == group):
+        if a <= r['date'] <= b and (group is None or r['grp'] == group):
             s += r['spend']; n += r['subs']
     return s, n
 
@@ -114,14 +137,15 @@ data = {
 }
 
 # ---- creatives ----
-ads = json.load(open(os.path.join(RAW, 'ads_30d.json')))['data']
+ads = json.load(open(os.path.join(RAW, 'ads_30d.json')))
+ads = ads.get('data', ads) if isinstance(ads, dict) else ads
 agg = collections.defaultdict(lambda: {'spend': 0, 'reach': 0, 'imp': 0, 'subs': 0})
 for r in ads:
     a = agg[r['ad_id']]
     a['name'] = r['ad_name']; a['created'] = r['ad_created_time'][:10]
     a['camp'] = r['campaign'].split('|')[2].strip()
     a['spend'] += r['spend'] or 0; a['reach'] += r['reach'] or 0; a['imp'] += r['impressions'] or 0
-    a['subs'] += (r['actions_complete_registration'] if '| Reg' in r['adset_name'] else r['actions_lead']) or 0
+    a['subs'] += (r['actions_complete_registration'] if classify(r['adset_name'])[0] else r['actions_lead']) or 0
 
 LABELS = {
     'static_reddit_nativereddit-stylesocialproof': ('&ldquo;Reddit thread&rdquo; social proof', 'Static'),
