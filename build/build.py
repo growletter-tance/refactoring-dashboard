@@ -60,7 +60,7 @@ daily_json = os.path.join(RAW, 'meta_daily.json')
 if os.path.exists(daily_json):
     # Windsor rows: date, campaign, adset_name, spend, actions_lead, actions_complete_registration
     src = json.load(open(daily_json))
-    src = src.get('data', src) if isinstance(src, dict) else src
+    src = (src.get('data') or src.get('result') or []) if isinstance(src, dict) else src
     for r in src:
         reg, grp = classify(r['adset_name'])
         n = (r.get('actions_complete_registration') if reg else r.get('actions_lead')) or 0
@@ -138,7 +138,7 @@ data = {
 
 # ---- creatives ----
 ads = json.load(open(os.path.join(RAW, 'ads_30d.json')))
-ads = ads.get('data', ads) if isinstance(ads, dict) else ads
+ads = (ads.get('data') or ads.get('result') or []) if isinstance(ads, dict) else ads
 agg = collections.defaultdict(lambda: {'spend': 0, 'reach': 0, 'imp': 0, 'subs': 0})
 for r in ads:
     a = agg[r['ad_id']]
