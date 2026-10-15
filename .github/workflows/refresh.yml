@@ -1,0 +1,52 @@
+name: Daily dashboard refresh
+
+on:
+  schedule:
+    - cron: "23 11 * * *"   # 6:23am Central (CDT); 5:23am in winter
+  workflow_dispatch: {}      # lets you run it by hand from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install image library
+        run: pip install --quiet pillow
+
+      - name: Pull Meta data from Windsor
+        env:
+          WINDSOR_API_KEY: ${{ secrets.WINDSOR_API_KEY }}
+        run: python3 build/fetch_windsor.py
+
+      - name: Build the page
+        run: |
+          cd build
+          python3 build.py --end "$END_DATE"
+          cp out/index.html ../site/index.html
+          cd ..
+          python3 -c "import json;h=open('site/index.html').read();i=h.find('var DATA = ');json.JSONDecoder().raw_decode(h,i+11);assert h.count('<section')==h.count('</section>');print('page ok')"
+
+      - name: Commit and push
+        run: |
+          git config user.name "GrowLetter dashboard bot"
+          git config user.email "tance@growletter.co"
+          git add site/index.html build/raw/meta_daily.json build/raw/ads_30d.json build/raw/images.json
+          if git diff --cached --quiet; then
+            echo "No changes to publish"
+          else
+            git commit -m "Daily data refresh $END_DATE"
+            git push
+          fi
