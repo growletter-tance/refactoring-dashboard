@@ -14,6 +14,8 @@ import datetime as dt
 import json
 import os
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -21,15 +23,15 @@ ACCOUNT = "1238226194734920"          # Meta ad account "RFT" (Refactoring)
 LAUNCH = "2026-08-19"
 RAW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "raw")
 
-DAILY_FIELDS = ["date", "campaign", "adset_name", "spend", "clicks",
+DAILY_FIELDS = ["account_id", "date", "campaign", "adset_name", "spend", "clicks",
                 "actions_lead", "actions_complete_registration"]
-AD_FIELDS = ["ad_id", "ad_name", "campaign", "adset_name", "ad_created_time", "spend",
+AD_FIELDS = ["account_id", "ad_id", "ad_name", "campaign", "adset_name", "ad_created_time", "spend",
              "reach", "impressions", "link_clicks", "actions_lead",
              "actions_complete_registration", "thumbnail_url"]
 
 
-def pull(fields, date_from, date_to):
-    key = os.environ.get("WINDSOR_API_KEY")
+def pull(fields, date_from, date_to, tries=6):
+    key = os.environ.get("WINDSOR_API_KEY", "").strip()
     if not key:
         sys.exit("WINDSOR_API_KEY is not set")
     qs = urllib.parse.urlencode({
@@ -37,14 +39,37 @@ def pull(fields, date_from, date_to):
         "date_from": date_from,
         "date_to": date_to,
         "fields": ",".join(fields),
-        "select_accounts": f"facebook__{ACCOUNT}",
+        "select_accounts": ACCOUNT,   # bare account id, same as the Snopes job
     })
     url = "https://connectors.windsor.ai/facebook?" + qs
-    with urllib.request.urlopen(url, timeout=300) as r:
-        body = json.load(r)
+    req = urllib.request.Request(url, headers={"User-Agent": "refactoring-dashboard-refresh/1.0",
+                                               "Accept": "application/json"})
+    for attempt in range(1, tries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                body = json.loads(r.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:500].replace(key, "[key]")
+            if (e.code == 429 or e.code >= 500) and attempt < tries:
+                time.sleep(3 * attempt)
+                continue
+            sys.exit(f"Windsor HTTP {e.code} for fields {','.join(fields)}: {detail}")
+        except urllib.error.URLError as e:
+            if attempt < tries:
+                time.sleep(3 * attempt)
+                continue
+            sys.exit(f"Windsor network error: {e.reason}")
     rows = (body.get("data") or body.get("result") or []) if isinstance(body, dict) else body
-    # keep newsletter campaigns only
-    return [x for x in rows if "Newsletter" in (x.get("campaign") or "")]
+    out = []
+    for x in rows:
+        acct = str(x.get("account_id", "")).replace("act_", "")
+        if acct and acct != ACCOUNT:
+            continue
+        if "Newsletter" not in (x.get("campaign") or ""):
+            continue
+        out.append(x)
+    return out
 
 
 def classify_reg(adset_name):
