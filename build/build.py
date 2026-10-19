@@ -64,7 +64,7 @@ if os.path.exists(daily_json):
     for r in src:
         reg, grp = classify(r['adset_name'])
         n = (r.get('actions_complete_registration') if reg else r.get('actions_lead')) or 0
-        rows.append({'date': dt.date.fromisoformat(r['date'][:10]), 'grp': grp, 'spend': float(r.get('spend') or 0), 'subs': int(n)})
+        rows.append({'date': dt.date.fromisoformat(r['date'][:10]), 'grp': grp, 'spend': float(r.get('spend') or 0), 'subs': int(float(n))})
 else:
     CODE_GROUP = {'R': 'us', 'L': 'us', 'ROW': 'row', 'RT': 'test', 'LS': 'test', 'LN': 'test'}
     for r in csv.DictReader(open(os.path.join(RAW, 'meta_adset_daily.csv'))):
@@ -144,8 +144,8 @@ for r in ads:
     a = agg[r['ad_id']]
     a['name'] = r['ad_name']; a['created'] = r['ad_created_time'][:10]
     a['camp'] = r['campaign'].split('|')[2].strip()
-    a['spend'] += r['spend'] or 0; a['reach'] += r['reach'] or 0; a['imp'] += r['impressions'] or 0
-    a['subs'] += (r['actions_complete_registration'] if classify(r['adset_name'])[0] else r['actions_lead']) or 0
+    a['spend'] += float(r.get('spend') or 0); a['reach'] += int(float(r.get('reach') or 0)); a['imp'] += int(float(r.get('impressions') or 0))
+    a['subs'] += int(float((r.get('actions_complete_registration') if classify(r['adset_name'])[0] else r.get('actions_lead')) or 0))
 
 LABELS = {
     'static_reddit_nativereddit-stylesocialproof': ('&ldquo;Reddit thread&rdquo; social proof', 'Static'),
